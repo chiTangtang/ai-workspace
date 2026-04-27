@@ -104,5 +104,7 @@ ENV/
 env/
 .env
 db.sqlite3
-data/*.json
+*.db
+**/__pycache__/
+data/
 !data/README.md
