@@ -70,6 +70,24 @@ class DocumentResponse(BaseModel):
     created_at: datetime
 
 
+class DocumentUploadPrecheckRequest(BaseModel):
+    """文档上传预检查请求"""
+    filename: str = Field(..., description="文件名", min_length=1)
+    file_size: int = Field(0, description="文件大小（字节）", ge=0)
+
+
+class DocumentUploadPrecheckResponse(BaseModel):
+    """文档上传预检查响应"""
+    supported: bool
+    filename: str
+    extension: str
+    parser: str
+    embedding_model_available: bool
+    embedding_model_name: Optional[str] = None
+    embedding_provider: Optional[str] = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ==================== RAG 相关模型 ====================
 
 class RAGRequest(BaseModel):
@@ -94,6 +112,7 @@ class ModelConfigCreate(BaseModel):
     api_key: str = Field("", description="API 密钥")
     model_name: str = Field(..., description="模型名称")
     is_default: bool = Field(False, description="是否设为默认配置")
+    is_embedding_default: bool = Field(False, description="是否设为默认向量模型")
 
 
 class ModelConfigResponse(BaseModel):
@@ -107,6 +126,9 @@ class ModelConfigResponse(BaseModel):
     api_key_masked: str = Field("", description="脱敏后的 API Key")
     model_name: str
     is_default: bool
+    is_embedding_default: bool
+    inferred_type: str = "unknown"
+    capability_hints: list[str] = Field(default_factory=list)
     created_at: datetime
 
 

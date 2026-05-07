@@ -31,6 +31,17 @@ export interface Document {
   created_at: string;
 }
 
+export interface DocumentUploadPrecheck {
+  supported: boolean;
+  filename: string;
+  extension: string;
+  parser: string;
+  embedding_model_available: boolean;
+  embedding_model_name?: string;
+  embedding_provider?: string;
+  warnings: string[];
+}
+
 // 模型配置相关类型
 export interface ModelConfig {
   id: string;
@@ -40,6 +51,9 @@ export interface ModelConfig {
   api_key_masked: string;
   model_name: string;
   is_default: boolean;
+  is_embedding_default: boolean;
+  inferred_type?: 'chat' | 'embedding' | 'unknown';
+  capability_hints?: string[];
   created_at: string;
 }
 
@@ -50,6 +64,7 @@ export interface ModelConfigForm {
   api_key: string;
   model_name: string;
   is_default: boolean;
+  is_embedding_default: boolean;
 }
 
 // Agent 相关类型

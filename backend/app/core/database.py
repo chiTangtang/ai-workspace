@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime, ForeignKey, func
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
+from sqlalchemy import inspect
 from app.config import settings
 
 # 创建数据库引擎
@@ -96,6 +97,7 @@ class ModelConfig(Base):
     api_key = Column(String(512), default="")
     model_name = Column(String(255), nullable=False)
     is_default = Column(Boolean, default=False)
+    is_embedding_default = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -126,3 +128,17 @@ def get_db() -> Session:
 def init_db():
     """初始化数据库，创建所有表"""
     Base.metadata.create_all(bind=engine)
+    _ensure_model_config_columns()
+
+
+def _ensure_model_config_columns():
+    """为旧版数据库补充缺失字段"""
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        column_names = {column["name"] for column in inspector.get_columns("model_configs")}
+
+        if "is_embedding_default" not in column_names:
+            connection.exec_driver_sql(
+                "ALTER TABLE model_configs "
+                "ADD COLUMN is_embedding_default BOOLEAN DEFAULT 0"
+            )

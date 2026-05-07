@@ -11,22 +11,19 @@ import {
   getMessages,
   sendMessage,
   deleteConversation,
-  processStream,
 } from '@/lib/api';
+import { useStreamingResponse } from '@/lib/useStreamingResponse';
 
-/** 对话页面 */
 export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
-  const [streamingContent, setStreamingContent] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>();
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const cancelStreamRef = useRef<(() => void) | null>(null);
+  const { streamingContent, isStreaming, startStream, stopStream, resetStreaming } =
+    useStreamingResponse();
 
-  // 加载对话列表
   const loadConversations = useCallback(async () => {
     try {
       const data = await getConversations();
@@ -36,12 +33,11 @@ export default function ChatPage() {
     }
   }, []);
 
-  // 加载消息列表
   const loadMessages = useCallback(async (conversationId: string) => {
     setLoading(true);
     try {
       const data = await getMessages(conversationId);
-      setMessages(Array.isArray(data) ? data : data.items || []);
+      setMessages(Array.isArray(data) ? data : data.messages || data.items || []);
     } catch {
       console.error('加载消息失败');
     } finally {
@@ -49,22 +45,27 @@ export default function ChatPage() {
     }
   }, []);
 
-  // 初始化加载对话列表
   useEffect(() => {
-    loadConversations();
+    const run = async () => {
+      await loadConversations();
+    };
+    void run();
   }, [loadConversations]);
 
-  // 切换对话时加载消息
   useEffect(() => {
     if (activeConversationId) {
-      loadMessages(activeConversationId);
+      const run = async () => {
+        await loadMessages(activeConversationId);
+      };
+      void run();
     } else {
-      setMessages([]);
+      queueMicrotask(() => {
+        setMessages([]);
+      });
     }
-    setStreamingContent('');
-  }, [activeConversationId, loadMessages]);
+    resetStreaming();
+  }, [activeConversationId, loadMessages, resetStreaming]);
 
-  // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
@@ -73,9 +74,7 @@ export default function ChatPage() {
     scrollToBottom();
   }, [messages, streamingContent, scrollToBottom]);
 
-  // 发送消息
   const handleSend = async (content: string) => {
-    // 添加用户消息到列表
     const userMessage: Message = {
       id: `temp-${Date.now()}`,
       conversation_id: activeConversationId || '',
@@ -83,74 +82,63 @@ export default function ChatPage() {
       content,
       created_at: new Date().toISOString(),
     };
+
     setMessages((prev) => [...prev, userMessage]);
-    setIsStreaming(true);
-    setStreamingContent('');
 
     try {
-      const stream = await sendMessage(content, activeConversationId, selectedModelId);
+      const { stream, conversationId } = await sendMessage(
+        content,
+        activeConversationId,
+        selectedModelId
+      );
 
-      // 处理流式响应
-      cancelStreamRef.current = processStream(stream, {
-        onContent: (text) => {
-          setStreamingContent((prev) => prev + text);
-        },
-        onDone: () => {
-          // 将流式内容转为正式消息
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `ai-${Date.now()}`,
-              conversation_id: activeConversationId || '',
-              role: 'assistant',
-              content: streamingContent,
-              created_at: new Date().toISOString(),
-            },
-          ]);
-          setStreamingContent('');
-          setIsStreaming(false);
-          cancelStreamRef.current = null;
-          // 刷新对话列表
+      if (conversationId && !activeConversationId) {
+        setActiveConversationId(conversationId);
+      }
+
+      startStream({
+        stream,
+        onDone: (finalContent) => {
+          if (finalContent) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `ai-${Date.now()}`,
+                conversation_id: conversationId || activeConversationId || '',
+                role: 'assistant',
+                content: finalContent,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
           loadConversations();
         },
         onError: (error) => {
-          setStreamingContent('');
-          setIsStreaming(false);
-          cancelStreamRef.current = null;
           alert(`错误: ${error}`);
         },
       });
     } catch (err) {
-      setStreamingContent('');
-      setIsStreaming(false);
+      resetStreaming();
       alert(`发送失败: ${err instanceof Error ? err.message : '未知错误'}`);
     }
   };
 
-  // 停止生成
   const handleStop = () => {
-    if (cancelStreamRef.current) {
-      cancelStreamRef.current();
-      cancelStreamRef.current = null;
-    }
-    // 保留已接收的内容
-    if (streamingContent) {
+    const finalContent = stopStream();
+    if (finalContent) {
       setMessages((prev) => [
         ...prev,
         {
           id: `ai-${Date.now()}`,
           conversation_id: activeConversationId || '',
           role: 'assistant',
-          content: streamingContent,
+          content: finalContent,
           created_at: new Date().toISOString(),
         },
       ]);
     }
-    setStreamingContent('');
-    setIsStreaming(false);
   };
 
-  // 删除对话
   const handleDeleteConversation = async (id: string) => {
     try {
       await deleteConversation(id);
@@ -164,18 +152,15 @@ export default function ChatPage() {
     }
   };
 
-  // 新建对话
   const handleNewConversation = () => {
     setActiveConversationId(undefined);
     setMessages([]);
-    setStreamingContent('');
+    resetStreaming();
   };
 
   return (
     <div className="flex h-full">
-      {/* 对话列表侧边栏 */}
       <div className="w-64 border-r border-border bg-sidebar flex flex-col shrink-0">
-        {/* 新建对话按钮 */}
         <div className="p-3 border-b border-border">
           <button
             onClick={handleNewConversation}
@@ -188,12 +173,9 @@ export default function ChatPage() {
           </button>
         </div>
 
-        {/* 对话列表 */}
         <div className="flex-1 overflow-y-auto p-2">
           {conversations.length === 0 ? (
-            <div className="text-center text-sm text-muted-foreground py-8">
-              暂无对话
-            </div>
+            <div className="text-center text-sm text-muted-foreground py-8">暂无对话</div>
           ) : (
             conversations.map((conv) => (
               <div
@@ -214,7 +196,6 @@ export default function ChatPage() {
                     {conv.message_count} 条消息
                   </div>
                 </div>
-                {/* 删除按钮 */}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -233,9 +214,7 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* 对话主区域 */}
       <div className="flex-1 flex flex-col h-full">
-        {/* 顶部工具栏 */}
         <div className="flex items-center justify-between px-4 h-14 border-b border-border shrink-0">
           <h1 className="text-sm font-medium text-foreground">
             {activeConversationId
@@ -248,23 +227,19 @@ export default function ChatPage() {
           />
         </div>
 
-        {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto px-4 py-6">
           {loading ? (
             <div className="flex items-center justify-center h-full">
               <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
             </div>
           ) : messages.length === 0 && !streamingContent ? (
-            /* 空状态 */
             <div className="flex flex-col items-center justify-center h-full text-center">
               <div className="w-16 h-16 rounded-2xl bg-accent/10 flex items-center justify-center mb-4">
                 <svg className="w-8 h-8 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-semibold text-foreground mb-2">
-                开始新对话
-              </h2>
+              <h2 className="text-xl font-semibold text-foreground mb-2">开始新对话</h2>
               <p className="text-sm text-muted-foreground max-w-md">
                 选择一个模型，输入您的问题，AI 助手将为您提供帮助。
               </p>
@@ -280,7 +255,6 @@ export default function ChatPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* 输入区域 */}
         <ChatInput
           onSend={handleSend}
           onStop={handleStop}

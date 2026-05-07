@@ -76,7 +76,7 @@ export default function ModelSelector({ selectedModelId, onSelectModel }: ModelS
 
       {/* 下拉列表 */}
       {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-64 rounded-lg border border-border bg-card shadow-xl z-50 max-h-60 overflow-y-auto">
+        <div className="absolute top-full left-0 mt-1 w-64 rounded-lg border border-border bg-card shadow-xl z-50 max-h-60 overflow-y-auto">
           {models.length === 0 ? (
             <div className="px-3 py-4 text-center text-sm text-muted-foreground">
               暂无可用模型，请先在设置中配置

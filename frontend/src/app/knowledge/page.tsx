@@ -12,36 +12,32 @@ import {
   getKnowledgeBases,
   createKnowledgeBase,
   deleteKnowledgeBase,
+  precheckDocumentUpload,
   uploadDocument,
   getDocuments,
   queryKnowledgeBase,
-  processStream,
 } from '@/lib/api';
+import { useStreamingResponse } from '@/lib/useStreamingResponse';
 
-/** 知识库页面 */
 export default function KnowledgePage() {
-  // 知识库列表视图
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newKbName, setNewKbName] = useState('');
   const [newKbDesc, setNewKbDesc] = useState('');
   const [loadingKbs, setLoadingKbs] = useState(false);
 
-  // 知识库详情视图
   const [activeKb, setActiveKb] = useState<KnowledgeBase | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
 
-  // 知识库问答
   const [kbMessages, setKbMessages] = useState<Message[]>([]);
-  const [streamingContent, setStreamingContent] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const cancelStreamRef = useRef<(() => void) | null>(null);
+  const { streamingContent, isStreaming, startStream, stopStream, resetStreaming } =
+    useStreamingResponse();
 
-  // 加载知识库列表
   const loadKnowledgeBases = useCallback(async () => {
     setLoadingKbs(true);
     try {
@@ -55,10 +51,12 @@ export default function KnowledgePage() {
   }, []);
 
   useEffect(() => {
-    loadKnowledgeBases();
+    const run = async () => {
+      await loadKnowledgeBases();
+    };
+    void run();
   }, [loadKnowledgeBases]);
 
-  // 加载文档列表
   const loadDocuments = useCallback(async (kbId: string) => {
     setLoadingDocs(true);
     try {
@@ -71,23 +69,22 @@ export default function KnowledgePage() {
     }
   }, []);
 
-  // 进入知识库详情
   const handleEnterKb = (kb: KnowledgeBase) => {
     setActiveKb(kb);
-    loadDocuments(kb.id);
+    void loadDocuments(kb.id);
     setKbMessages([]);
-    setStreamingContent('');
+    resetStreaming();
+    setUploadStatus(null);
   };
 
-  // 返回知识库列表
   const handleBackToList = () => {
     setActiveKb(null);
     setDocuments([]);
     setKbMessages([]);
-    setStreamingContent('');
+    resetStreaming();
+    setUploadStatus(null);
   };
 
-  // 创建知识库
   const handleCreateKb = async () => {
     if (!newKbName.trim()) return;
     try {
@@ -95,13 +92,12 @@ export default function KnowledgePage() {
       setShowCreateModal(false);
       setNewKbName('');
       setNewKbDesc('');
-      loadKnowledgeBases();
+      void loadKnowledgeBases();
     } catch {
       alert('创建知识库失败');
     }
   };
 
-  // 删除知识库
   const handleDeleteKb = async (id: string) => {
     if (!confirm('确定要删除此知识库吗？')) return;
     try {
@@ -109,28 +105,48 @@ export default function KnowledgePage() {
       if (activeKb?.id === id) {
         handleBackToList();
       }
-      loadKnowledgeBases();
+      void loadKnowledgeBases();
     } catch {
       alert('删除知识库失败');
     }
   };
 
-  // 上传文档
   const handleUploadDocument = async (file: File) => {
     if (!activeKb) return;
     setIsUploading(true);
+    setUploadStatus('正在检查文件和向量模型配置...');
     try {
+      const precheck = await precheckDocumentUpload(activeKb.id, file);
+
+      if (!precheck.supported) {
+        throw new Error(`不支持的文件格式 ${precheck.extension}`);
+      }
+
+      if (!precheck.embedding_model_available) {
+        throw new Error('当前没有可用的向量模型配置，请先在设置页配置默认向量模型');
+      }
+
+      if (precheck.warnings.length > 0) {
+        setUploadStatus(`预检查提示: ${precheck.warnings.join('；')}`);
+      } else {
+        setUploadStatus(
+          `预检查通过，使用 ${precheck.embedding_provider} / ${precheck.embedding_model_name}`
+        );
+      }
+
       await uploadDocument(activeKb.id, file);
-      loadDocuments(activeKb.id);
-      loadKnowledgeBases();
-    } catch {
-      alert('上传文档失败');
+      setUploadStatus('上传成功，文档已完成解析、分块和向量化');
+      void loadDocuments(activeKb.id);
+      void loadKnowledgeBases();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '上传文档失败';
+      setUploadStatus(message);
+      alert(message);
     } finally {
       setIsUploading(false);
     }
   };
 
-  // 知识库问答
   const handleQuery = async (question: string) => {
     if (!activeKb) return;
 
@@ -142,83 +158,60 @@ export default function KnowledgePage() {
       created_at: new Date().toISOString(),
     };
     setKbMessages((prev) => [...prev, userMessage]);
-    setIsStreaming(true);
-    setStreamingContent('');
 
     try {
-      const stream = await queryKnowledgeBase(
-        activeKb.id,
-        question,
-        undefined,
-        selectedModelId
-      );
+      const stream = await queryKnowledgeBase(activeKb.id, question, undefined, selectedModelId);
 
-      cancelStreamRef.current = processStream(stream, {
-        onContent: (text) => {
-          setStreamingContent((prev) => prev + text);
-        },
-        onDone: () => {
-          setKbMessages((prev) => [
-            ...prev,
-            {
-              id: `ai-${Date.now()}`,
-              conversation_id: '',
-              role: 'assistant',
-              content: streamingContent,
-              created_at: new Date().toISOString(),
-            },
-          ]);
-          setStreamingContent('');
-          setIsStreaming(false);
-          cancelStreamRef.current = null;
+      startStream({
+        stream,
+        onDone: (finalContent) => {
+          if (finalContent) {
+            setKbMessages((prev) => [
+              ...prev,
+              {
+                id: `ai-${Date.now()}`,
+                conversation_id: '',
+                role: 'assistant',
+                content: finalContent,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
         },
         onError: (error) => {
-          setStreamingContent('');
-          setIsStreaming(false);
-          cancelStreamRef.current = null;
           alert(`错误: ${error}`);
         },
       });
     } catch (err) {
-      setStreamingContent('');
-      setIsStreaming(false);
+      resetStreaming();
       alert(`查询失败: ${err instanceof Error ? err.message : '未知错误'}`);
     }
   };
 
-  // 停止生成
   const handleStop = () => {
-    if (cancelStreamRef.current) {
-      cancelStreamRef.current();
-      cancelStreamRef.current = null;
-    }
-    if (streamingContent) {
+    const finalContent = stopStream();
+    if (finalContent) {
       setKbMessages((prev) => [
         ...prev,
         {
           id: `ai-${Date.now()}`,
           conversation_id: '',
           role: 'assistant',
-          content: streamingContent,
+          content: finalContent,
           created_at: new Date().toISOString(),
         },
       ]);
     }
-    setStreamingContent('');
-    setIsStreaming(false);
   };
 
-  // 自动滚动
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [kbMessages, streamingContent]);
 
-  // ==================== 知识库列表视图 ====================
   if (!activeKb) {
     return (
       <div className="h-full overflow-y-auto">
         <div className="max-w-5xl mx-auto px-6 py-8">
-          {/* 标题栏 */}
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="text-2xl font-bold text-foreground">知识库</h1>
@@ -237,7 +230,6 @@ export default function KnowledgePage() {
             </button>
           </div>
 
-          {/* 知识库卡片列表 */}
           {loadingKbs ? (
             <div className="flex items-center justify-center py-20">
               <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
@@ -250,9 +242,7 @@ export default function KnowledgePage() {
                 </svg>
               </div>
               <h2 className="text-lg font-semibold text-foreground mb-2">暂无知识库</h2>
-              <p className="text-sm text-muted-foreground">
-                点击上方按钮创建您的第一个知识库
-              </p>
+              <p className="text-sm text-muted-foreground">点击上方按钮创建您的第一个知识库</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -271,7 +261,7 @@ export default function KnowledgePage() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleDeleteKb(kb.id);
+                        void handleDeleteKb(kb.id);
                       }}
                       className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-all"
                       title="删除知识库"
@@ -295,12 +285,7 @@ export default function KnowledgePage() {
           )}
         </div>
 
-        {/* 创建知识库模态框 */}
-        <Modal
-          isOpen={showCreateModal}
-          onClose={() => setShowCreateModal(false)}
-          title="创建知识库"
-        >
+        <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="创建知识库">
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-foreground mb-1.5">
@@ -315,9 +300,7 @@ export default function KnowledgePage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-foreground mb-1.5">
-                描述
-              </label>
+              <label className="block text-sm font-medium text-foreground mb-1.5">描述</label>
               <textarea
                 value={newKbDesc}
                 onChange={(e) => setNewKbDesc(e.target.value)}
@@ -347,12 +330,9 @@ export default function KnowledgePage() {
     );
   }
 
-  // ==================== 知识库详情视图 ====================
   return (
     <div className="flex h-full">
-      {/* 左侧：文档管理 */}
       <div className="w-72 border-r border-border bg-sidebar flex flex-col shrink-0">
-        {/* 返回按钮和标题 */}
         <div className="p-4 border-b border-border">
           <button
             onClick={handleBackToList}
@@ -367,12 +347,15 @@ export default function KnowledgePage() {
           <p className="text-xs text-muted-foreground mt-0.5">{activeKb.description}</p>
         </div>
 
-        {/* 上传区域 */}
         <div className="p-3">
-          <DocumentUpload onUpload={handleUploadDocument} isUploading={isUploading} />
+          <DocumentUpload onUpload={handleUploadDocument} isUploading={isUploading} acceptedTypes=".pdf,.doc,.docx,.txt,.md" />
+          {uploadStatus && (
+            <div className="mt-3 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground whitespace-pre-wrap break-words">
+              {uploadStatus}
+            </div>
+          )}
         </div>
 
-        {/* 文档列表 */}
         <div className="flex-1 overflow-y-auto p-3">
           <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
             文档列表 ({documents.length})
@@ -404,9 +387,7 @@ export default function KnowledgePage() {
         </div>
       </div>
 
-      {/* 右侧：知识库问答 */}
       <div className="flex-1 flex flex-col h-full">
-        {/* 顶部工具栏 */}
         <div className="flex items-center justify-between px-4 h-14 border-b border-border shrink-0">
           <h1 className="text-sm font-medium text-foreground">知识库问答</h1>
           <ModelSelector
@@ -415,7 +396,6 @@ export default function KnowledgePage() {
           />
         </div>
 
-        {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto px-4 py-6">
           {kbMessages.length === 0 && !streamingContent ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
@@ -424,9 +404,7 @@ export default function KnowledgePage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </div>
-              <h2 className="text-xl font-semibold text-foreground mb-2">
-                基于知识库提问
-              </h2>
+              <h2 className="text-xl font-semibold text-foreground mb-2">基于知识库提问</h2>
               <p className="text-sm text-muted-foreground max-w-md">
                 提出关于 {activeKb.name} 的问题，AI 将基于知识库内容为您解答。
               </p>
@@ -442,7 +420,6 @@ export default function KnowledgePage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* 输入区域 */}
         <ChatInput
           onSend={handleQuery}
           onStop={handleStop}

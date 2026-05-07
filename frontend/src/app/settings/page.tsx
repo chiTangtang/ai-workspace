@@ -9,6 +9,7 @@ import {
   updateModelConfig,
   deleteModelConfig,
   testModelConfig,
+  testEmbeddingModelConfig,
 } from '@/lib/api';
 
 /** Provider 默认 Base URL 映射 */
@@ -37,6 +38,12 @@ const MODEL_TEMPLATES = [
     provider: 'openrouter',
     base_url: 'https://openrouter.ai/api/v1',
     model_name: 'openai/gpt-3.5-turbo',
+  },
+  {
+    label: 'OpenAI Embedding 3 Small',
+    provider: 'openai',
+    base_url: 'https://api.openai.com/v1',
+    model_name: 'text-embedding-3-small',
   },
   {
     label: 'DeepSeek',
@@ -77,7 +84,13 @@ export default function SettingsPage() {
   const [showFormModal, setShowFormModal] = useState(false);
   const [editingConfig, setEditingConfig] = useState<ModelConfig | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
+  const [embeddingTestingId, setEmbeddingTestingId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{
+    id: string;
+    kind: 'chat' | 'embedding';
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   // 表单状态
   const [formData, setFormData] = useState<ModelConfigForm>({
@@ -87,7 +100,18 @@ export default function SettingsPage() {
     api_key: '',
     model_name: '',
     is_default: false,
+    is_embedding_default: false,
   });
+
+  const defaultChatModel = modelConfigs.find((config) => config.is_default);
+  const defaultEmbeddingModel = modelConfigs.find((config) => config.is_embedding_default);
+  const normalizedModelName = formData.model_name.trim().toLowerCase();
+  const formLooksLikeEmbedding = ['embedding', 'bge', 'm3', 'gte', 'e5'].some((keyword) =>
+    normalizedModelName.includes(keyword)
+  );
+  const formLooksLikeChat = ['gpt', 'chat', 'glm', 'qwen', 'deepseek', 'mimo', 'claude', 'kimi'].some((keyword) =>
+    normalizedModelName.includes(keyword)
+  );
 
   // 加载模型配置列表
   const loadConfigs = useCallback(async () => {
@@ -103,7 +127,10 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    loadConfigs();
+    const run = async () => {
+      await loadConfigs();
+    };
+    void run();
   }, [loadConfigs]);
 
   // 打开新建表单
@@ -116,6 +143,7 @@ export default function SettingsPage() {
       api_key: '',
       model_name: '',
       is_default: false,
+      is_embedding_default: false,
     });
     setShowFormModal(true);
   };
@@ -130,6 +158,7 @@ export default function SettingsPage() {
       api_key: '', // API Key 不回显
       model_name: config.model_name,
       is_default: config.is_default,
+      is_embedding_default: config.is_embedding_default,
     });
     setShowFormModal(true);
   };
@@ -147,6 +176,16 @@ export default function SettingsPage() {
   const handleSubmit = async () => {
     if (!formData.name.trim() || !formData.model_name.trim()) {
       alert('请填写名称和模型名称');
+      return;
+    }
+
+    if (formData.is_embedding_default && !formLooksLikeEmbedding) {
+      alert('当前模型名称看起来不像向量模型。请确认它支持 /embeddings 后再设为默认向量模型。');
+      return;
+    }
+
+    if (formData.is_default && formLooksLikeEmbedding && !formLooksLikeChat) {
+      alert('当前模型名称更像向量模型，不建议将它设为默认聊天模型。');
       return;
     }
 
@@ -180,16 +219,43 @@ export default function SettingsPage() {
     setTestResult(null);
     try {
       const result = await testModelConfig(id);
-      setTestResult({ id, success: true, message: result.message || '连接成功' });
+      setTestResult({ id, kind: 'chat', success: true, message: result.message || '连接成功' });
     } catch (err) {
       setTestResult({
         id,
+        kind: 'chat',
         success: false,
         message: err instanceof Error ? err.message : '连接失败',
       });
     } finally {
       setTestingId(null);
       // 5秒后清除测试结果
+      setTimeout(() => {
+        setTestResult((prev) => (prev?.id === id ? null : prev));
+      }, 5000);
+    }
+  };
+
+  const handleEmbeddingTest = async (id: string) => {
+    setEmbeddingTestingId(id);
+    setTestResult(null);
+    try {
+      const result = await testEmbeddingModelConfig(id);
+      setTestResult({
+        id,
+        kind: 'embedding',
+        success: !!result.success,
+        message: result.message || '向量模型连接成功',
+      });
+    } catch (err) {
+      setTestResult({
+        id,
+        kind: 'embedding',
+        success: false,
+        message: err instanceof Error ? err.message : '向量模型连接失败',
+      });
+    } finally {
+      setEmbeddingTestingId(null);
       setTimeout(() => {
         setTestResult((prev) => (prev?.id === id ? null : prev));
       }, 5000);
@@ -224,6 +290,44 @@ export default function SettingsPage() {
             </button>
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div className="rounded-xl border border-border bg-card px-4 py-3">
+              <div className="text-xs font-medium text-muted-foreground mb-1">默认聊天模型</div>
+              {defaultChatModel ? (
+                <>
+                  <div className="text-sm font-semibold text-foreground">{defaultChatModel.name}</div>
+                  <div className="text-xs text-muted-foreground mt-1 break-all">
+                    {defaultChatModel.provider} / {defaultChatModel.model_name}
+                  </div>
+                </>
+              ) : (
+                <div className="text-sm text-amber-600">尚未设置，聊天将回退到第一条可用配置</div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card px-4 py-3">
+              <div className="text-xs font-medium text-muted-foreground mb-1">默认向量模型</div>
+              {defaultEmbeddingModel ? (
+                <>
+                  <div className="text-sm font-semibold text-foreground">{defaultEmbeddingModel.name}</div>
+                  <div className="text-xs text-muted-foreground mt-1 break-all">
+                    {defaultEmbeddingModel.provider} / {defaultEmbeddingModel.model_name}
+                  </div>
+                </>
+              ) : (
+                <div className="text-sm text-amber-600">尚未设置，知识库上传会回退到聊天模型，可能导致 embeddings 失败</div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card/60 px-4 py-3 mb-4">
+            <div className="text-sm font-medium text-foreground mb-1">推荐配置方式</div>
+            <p className="text-xs text-muted-foreground leading-5">
+              聊天模型用于普通对话、Agent 和问答生成；向量模型只用于知识库文档切块后的 embeddings。
+              最稳妥的做法是分别配置，避免把聊天模型误用于向量化。
+            </p>
+          </div>
+
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
@@ -248,7 +352,12 @@ export default function SettingsPage() {
                         <h3 className="text-base font-semibold text-foreground">{config.name}</h3>
                         {config.is_default && (
                           <span className="px-2 py-0.5 rounded-full text-xs bg-accent/20 text-accent font-medium">
-                            默认
+                            聊天默认
+                          </span>
+                        )}
+                        {config.is_embedding_default && (
+                          <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-500/15 text-emerald-600 font-medium">
+                            向量默认
                           </span>
                         )}
                       </div>
@@ -257,17 +366,64 @@ export default function SettingsPage() {
                   </div>
 
                   <div className="space-y-2 mb-4">
-                    <div className="flex items-center gap-2 text-sm">
+                    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-start gap-2 text-sm">
+                      <span className="text-muted-foreground">推断:</span>
+                      <div className="flex flex-wrap gap-1.5 min-w-0">
+                        <span className="px-2 py-0.5 rounded-full text-xs bg-muted text-muted-foreground">
+                          {config.inferred_type === 'embedding'
+                            ? '偏向向量模型'
+                            : config.inferred_type === 'chat'
+                              ? '偏向聊天模型'
+                              : '用途待确认'}
+                        </span>
+                        {config.capability_hints?.map((hint) => (
+                          <span
+                            key={hint}
+                            className="px-2 py-0.5 rounded-full text-xs bg-muted text-muted-foreground"
+                          >
+                            {hint}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-start gap-2 text-sm">
+                      <span className="text-muted-foreground">用途:</span>
+                      <div className="flex flex-wrap gap-2 min-w-0">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                            config.is_default
+                              ? 'bg-accent/15 text-accent'
+                              : 'bg-muted text-muted-foreground'
+                          }`}
+                        >
+                          聊天
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                            config.is_embedding_default
+                              ? 'bg-emerald-500/15 text-emerald-600'
+                              : 'bg-muted text-muted-foreground'
+                          }`}
+                        >
+                          向量化
+                        </span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-start gap-2 text-sm">
                       <span className="text-muted-foreground">Provider:</span>
-                      <span className="text-foreground font-medium">{config.provider}</span>
+                      <span className="text-foreground font-medium min-w-0">{config.provider}</span>
                     </div>
-                    <div className="flex items-center gap-2 text-sm">
+                    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-start gap-2 text-sm">
                       <span className="text-muted-foreground">Base URL:</span>
-                      <span className="text-foreground text-xs font-mono truncate">{config.base_url}</span>
+                      <span className="text-foreground text-xs font-mono min-w-0 break-all">
+                        {config.base_url}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-2 text-sm">
+                    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-start gap-2 text-sm">
                       <span className="text-muted-foreground">API Key:</span>
-                      <span className="text-foreground font-mono text-xs">{config.api_key_masked}</span>
+                      <span className="text-foreground font-mono text-xs min-w-0 break-all">
+                        {config.api_key_masked}
+                      </span>
                     </div>
                   </div>
 
@@ -285,7 +441,7 @@ export default function SettingsPage() {
                   )}
 
                   {/* 操作按钮 */}
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button
                       onClick={() => handleTest(config.id)}
                       disabled={testingId === config.id}
@@ -299,6 +455,20 @@ export default function SettingsPage() {
                         </svg>
                       )}
                       测试连接
+                    </button>
+                    <button
+                      onClick={() => handleEmbeddingTest(config.id)}
+                      disabled={embeddingTestingId === config.id}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+                    >
+                      {embeddingTestingId === config.id ? (
+                        <div className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14-4H5m14 8H9m-4 0H5" />
+                        </svg>
+                      )}
+                      测试向量模型
                     </button>
                     <button
                       onClick={() => handleOpenEdit(config)}
@@ -385,7 +555,7 @@ export default function SettingsPage() {
                 ))}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                点击模板自动填充 Provider、Base URL 和模型名称
+                点击模板自动填充 Provider、Base URL 和模型名称。向量模型建议选择 embedding 模板。
               </p>
             </div>
           )}
@@ -463,11 +633,32 @@ export default function SettingsPage() {
               placeholder="例如：gpt-4, claude-3-opus"
               className="w-full px-3 py-2 rounded-lg border border-border bg-input-bg text-foreground text-sm placeholder:text-muted-foreground outline-none focus:border-accent transition-colors font-mono"
             />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <span
+                className={`px-2 py-0.5 rounded-full text-xs ${
+                  formLooksLikeEmbedding
+                    ? 'bg-emerald-500/15 text-emerald-600'
+                    : 'bg-muted text-muted-foreground'
+                }`}
+              >
+                {formLooksLikeEmbedding ? '识别为向量模型候选' : '未识别为向量模型'}
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-xs ${
+                  formLooksLikeChat ? 'bg-accent/15 text-accent' : 'bg-muted text-muted-foreground'
+                }`}
+              >
+                {formLooksLikeChat ? '识别为聊天模型候选' : '未识别为聊天模型'}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              这是基于模型名称的快速判断，不等同于真实能力；最终请用“测试连接”和“测试向量模型”确认。
+            </p>
           </div>
 
           {/* 设为默认 */}
           <div className="flex items-center justify-between py-2">
-            <label className="text-sm font-medium text-foreground">设为默认模型</label>
+            <label className="text-sm font-medium text-foreground">设为默认聊天模型</label>
             <button
               onClick={() => setFormData((prev) => ({ ...prev, is_default: !prev.is_default }))}
               className={`relative w-10 h-5 rounded-full transition-colors ${
@@ -477,6 +668,32 @@ export default function SettingsPage() {
               <span
                 className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
                   formData.is_default ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between py-2">
+            <div>
+              <label className="text-sm font-medium text-foreground">设为默认向量模型</label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                知识库上传和检索生成向量时优先使用
+              </p>
+            </div>
+            <button
+              onClick={() =>
+                setFormData((prev) => ({
+                  ...prev,
+                  is_embedding_default: !prev.is_embedding_default,
+                }))
+              }
+              className={`relative w-10 h-5 rounded-full transition-colors ${
+                formData.is_embedding_default ? 'bg-emerald-500' : 'bg-muted'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                  formData.is_embedding_default ? 'translate-x-5' : 'translate-x-0'
                 }`}
               />
             </button>

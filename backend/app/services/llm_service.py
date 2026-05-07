@@ -89,13 +89,13 @@ class LLMService:
         message = choice["message"]
 
         # 检查是否有工具调用
-        if "tool_calls" in message:
+        if message and "tool_calls" in message:
             return json.dumps({
-                "content": message.get("content", ""),
+                "content": message.get("content") or "",
                 "tool_calls": message["tool_calls"],
             }, ensure_ascii=False)
 
-        return message.get("content", "")
+        return (message or {}).get("content") or ""
 
     async def chat_stream(
         self,
@@ -244,9 +244,10 @@ class LLMService:
                 model_config=model_config,
                 max_tokens=10,
             )
+            response_preview = response[:100] if response else "[empty response]"
             return {
                 "success": True,
-                "message": f"连接成功，模型回复: {response[:100]}",
+                "message": f"连接成功，模型回复: {response_preview}",
             }
         except httpx.TimeoutException:
             return {

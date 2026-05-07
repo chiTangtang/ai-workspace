@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
                 api_key=settings.DEFAULT_LLM_API_KEY,
                 model_name=settings.DEFAULT_LLM_MODEL_NAME,
                 is_default=True,
+                is_embedding_default=False,
             )
             db.add(default_config)
             db.commit()

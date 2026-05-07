@@ -1,30 +1,40 @@
-import { ModelConfigForm } from '@/types';
+import { DocumentUploadPrecheck, ModelConfigForm } from '@/types';
 
-// API 基础地址
 const API_BASE = 'http://localhost:8000';
 
-// ==================== 对话 API ====================
+interface StreamResponse {
+  stream: ReadableStream<Uint8Array>;
+  conversationId?: string;
+}
 
-/** 获取所有对话列表 */
+async function getApiErrorMessage(res: Response, fallback: string) {
+  try {
+    const data = await res.json();
+    if (typeof data?.detail === 'string') return data.detail;
+    if (typeof data?.message === 'string') return data.message;
+  } catch {
+    // ignore parse errors
+  }
+  return fallback;
+}
+
 export async function getConversations() {
   const res = await fetch(`${API_BASE}/api/conversations`);
   if (!res.ok) throw new Error('获取对话列表失败');
   return res.json();
 }
 
-/** 获取指定对话的消息列表 */
 export async function getMessages(conversationId: string) {
   const res = await fetch(`${API_BASE}/api/conversations/${conversationId}/messages`);
   if (!res.ok) throw new Error('获取消息失败');
   return res.json();
 }
 
-/** 发送消息（流式响应） */
 export async function sendMessage(
   message: string,
   conversationId?: string,
   modelConfigId?: string
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<StreamResponse> {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -36,10 +46,12 @@ export async function sendMessage(
   });
   if (!res.ok) throw new Error('发送消息失败');
   if (!res.body) throw new Error('响应体为空');
-  return res.body;
+  return {
+    stream: res.body,
+    conversationId: res.headers.get('X-Conversation-Id') || undefined,
+  };
 }
 
-/** 删除对话 */
 export async function deleteConversation(id: string) {
   const res = await fetch(`${API_BASE}/api/conversations/${id}`, {
     method: 'DELETE',
@@ -48,16 +60,12 @@ export async function deleteConversation(id: string) {
   return res.json();
 }
 
-// ==================== 知识库 API ====================
-
-/** 获取所有知识库 */
 export async function getKnowledgeBases() {
   const res = await fetch(`${API_BASE}/api/knowledge-bases`);
   if (!res.ok) throw new Error('获取知识库列表失败');
   return res.json();
 }
 
-/** 创建知识库 */
 export async function createKnowledgeBase(name: string, description: string) {
   const res = await fetch(`${API_BASE}/api/knowledge-bases`, {
     method: 'POST',
@@ -68,7 +76,6 @@ export async function createKnowledgeBase(name: string, description: string) {
   return res.json();
 }
 
-/** 删除知识库 */
 export async function deleteKnowledgeBase(id: string) {
   const res = await fetch(`${API_BASE}/api/knowledge-bases/${id}`, {
     method: 'DELETE',
@@ -77,7 +84,6 @@ export async function deleteKnowledgeBase(id: string) {
   return res.json();
 }
 
-/** 上传文档到知识库 */
 export async function uploadDocument(kbId: string, file: File) {
   const formData = new FormData();
   formData.append('file', file);
@@ -85,18 +91,29 @@ export async function uploadDocument(kbId: string, file: File) {
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('上传文档失败');
+  if (!res.ok) throw new Error(await getApiErrorMessage(res, '上传文档失败'));
   return res.json();
 }
 
-/** 获取知识库的文档列表 */
+export async function precheckDocumentUpload(kbId: string, file: File): Promise<DocumentUploadPrecheck> {
+  const res = await fetch(`${API_BASE}/api/knowledge-bases/${kbId}/documents/precheck`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filename: file.name,
+      file_size: file.size,
+    }),
+  });
+  if (!res.ok) throw new Error(await getApiErrorMessage(res, '上传预检查失败'));
+  return res.json();
+}
+
 export async function getDocuments(kbId: string) {
   const res = await fetch(`${API_BASE}/api/knowledge-bases/${kbId}/documents`);
   if (!res.ok) throw new Error('获取文档列表失败');
   return res.json();
 }
 
-/** 知识库问答（流式响应） */
 export async function queryKnowledgeBase(
   kbId: string,
   question: string,
@@ -117,16 +134,12 @@ export async function queryKnowledgeBase(
   return res.body;
 }
 
-// ==================== 模型配置 API ====================
-
-/** 获取所有模型配置 */
 export async function getModelConfigs() {
   const res = await fetch(`${API_BASE}/api/model-configs`);
   if (!res.ok) throw new Error('获取模型配置失败');
   return res.json();
 }
 
-/** 创建模型配置 */
 export async function createModelConfig(config: ModelConfigForm) {
   const res = await fetch(`${API_BASE}/api/model-configs`, {
     method: 'POST',
@@ -137,7 +150,6 @@ export async function createModelConfig(config: ModelConfigForm) {
   return res.json();
 }
 
-/** 更新模型配置 */
 export async function updateModelConfig(id: string, config: ModelConfigForm) {
   const res = await fetch(`${API_BASE}/api/model-configs/${id}`, {
     method: 'PUT',
@@ -148,7 +160,6 @@ export async function updateModelConfig(id: string, config: ModelConfigForm) {
   return res.json();
 }
 
-/** 删除模型配置 */
 export async function deleteModelConfig(id: string) {
   const res = await fetch(`${API_BASE}/api/model-configs/${id}`, {
     method: 'DELETE',
@@ -157,25 +168,28 @@ export async function deleteModelConfig(id: string) {
   return res.json();
 }
 
-/** 测试模型配置连接 */
 export async function testModelConfig(id: string) {
   const res = await fetch(`${API_BASE}/api/model-configs/${id}/test`, {
     method: 'POST',
   });
-  if (!res.ok) throw new Error('测试连接失败');
+  if (!res.ok) throw new Error(await getApiErrorMessage(res, '测试连接失败'));
   return res.json();
 }
 
-// ==================== Agent API ====================
+export async function testEmbeddingModelConfig(id: string) {
+  const res = await fetch(`${API_BASE}/api/model-configs/${id}/test-embedding`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await getApiErrorMessage(res, '测试向量模型失败'));
+  return res.json();
+}
 
-/** 获取可用的 Agent 工具列表 */
 export async function getAgentTools() {
   const res = await fetch(`${API_BASE}/api/agent/tools`);
   if (!res.ok) throw new Error('获取 Agent 工具失败');
   return res.json();
 }
 
-/** 发送 Agent 消息（流式响应） */
 export async function sendAgentMessage(
   message: string,
   conversationId?: string,
@@ -197,9 +211,6 @@ export async function sendAgentMessage(
   return res.body;
 }
 
-// ==================== 多模态 API ====================
-
-/** 图片分析 */
 export async function analyzeImage(
   message: string,
   imageBase64: string,
@@ -218,17 +229,6 @@ export async function analyzeImage(
   return res.json();
 }
 
-// ==================== 流式响应处理工具 ====================
-
-/**
- * 处理 SSE 流式响应
- * @param stream 响应流
- * @param onContent 收到文本内容时的回调
- * @param onToolCall 收到工具调用时的回调
- * @param onToolResult 收到工具结果时的回调
- * @param onDone 流式响应结束时的回调
- * @param onError 出错时的回调
- */
 export function processStream(
   stream: ReadableStream<Uint8Array>,
   callbacks: {
@@ -256,33 +256,45 @@ export function processStream(
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
-            if (data === '[DONE]') {
-              callbacks.onDone?.();
-              return;
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data: ')) continue;
+
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') {
+            callbacks.onDone?.();
+            return;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+
+            if (typeof parsed.content === 'string') {
+              callbacks.onContent?.(parsed.content);
+              continue;
             }
-            try {
-              const parsed = JSON.parse(data);
-              switch (parsed.type) {
-                case 'content':
-                  callbacks.onContent?.(parsed.data);
-                  break;
-                case 'tool_call':
-                  callbacks.onToolCall?.(parsed.tool_name, parsed.data);
-                  break;
-                case 'tool_result':
-                  callbacks.onToolResult?.(parsed.data);
-                  break;
-                case 'error':
-                  callbacks.onError?.(parsed.data);
-                  break;
-              }
-            } catch {
-              // 非 JSON 数据，作为纯文本内容处理
-              callbacks.onContent?.(data);
+
+            if (parsed.tool_calls) {
+              callbacks.onToolCall?.('tool_calls', JSON.stringify(parsed.tool_calls));
+              continue;
             }
+
+            switch (parsed.type) {
+              case 'content':
+                callbacks.onContent?.(parsed.data);
+                break;
+              case 'tool_call':
+                callbacks.onToolCall?.(parsed.tool_name, parsed.data);
+                break;
+              case 'tool_result':
+                callbacks.onToolResult?.(parsed.data);
+                break;
+              case 'error':
+                callbacks.onError?.(parsed.data);
+                break;
+            }
+          } catch {
+            callbacks.onContent?.(data);
           }
         }
 
@@ -295,7 +307,6 @@ export function processStream(
 
   read();
 
-  // 返回取消函数
   return () => {
     reader.cancel();
   };

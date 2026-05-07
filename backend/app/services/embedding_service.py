@@ -30,7 +30,7 @@ class EmbeddingService:
             return []
 
         # 使用配置的 embedding 模型或默认模型
-        model_name = embedding_model or "text-embedding-ada-002"
+        model_name = embedding_model or "text-embedding-3-small"
 
         # 构建 API URL
         base_url = model_config["base_url"].rstrip("/") if model_config else "https://api.openai.com/v1"
@@ -90,6 +90,40 @@ class EmbeddingService:
             embedding_model=embedding_model,
         )
         return embeddings[0] if embeddings else []
+
+    async def test_connection(
+        self,
+        model_config: Optional[dict] = None,
+        embedding_model: Optional[str] = None,
+    ) -> dict:
+        """
+        测试 embedding 模型连接是否正常
+        """
+        try:
+            embedding = await self.embed_query(
+                text="Hello embedding test",
+                model_config=model_config,
+                embedding_model=embedding_model,
+            )
+            return {
+                "success": True,
+                "message": f"向量模型连接成功，返回维度: {len(embedding)}",
+            }
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "message": "向量模型连接超时，请检查网络和 API 地址是否正确",
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "success": False,
+                "message": f"HTTP 错误 {e.response.status_code}: {e.response.text[:200]}",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"向量模型连接失败: {str(e)}",
+            }
 
 
 # 全局 Embedding 服务实例
