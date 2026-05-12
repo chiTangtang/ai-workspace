@@ -271,6 +271,59 @@ class AgentService:
             "provider": config.provider,
         }
 
+    async def _run_react_loop(
+        self,
+        messages: list[dict],
+        active_tools: list[dict],
+        model_config: dict,
+    ) -> str:
+        """
+        以非流式方式执行完整 ReAct 循环，返回最终文本。
+        :param messages: 初始消息列表
+        :param active_tools: 启用的工具列表
+        :return: 最终助手回复
+        """
+        full_content = ""
+
+        for _ in range(self.max_rounds):
+            result = await llm_service.chat_with_tools(
+                messages=messages,
+                tools=active_tools if active_tools else None,
+                model_config=model_config,
+            )
+
+            content = result.get("content", "")
+            tool_calls = result.get("tool_calls")
+
+            if content:
+                full_content += content
+
+            if not tool_calls:
+                break
+
+            for tool_call in tool_calls:
+                func = tool_call.get("function", {})
+                tool_name = func.get("name", "")
+                try:
+                    arguments = json.loads(func.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    arguments = {}
+
+                tool_result = await self._execute_tool(tool_name, arguments)
+
+                messages.append({
+                    "role": "assistant",
+                    "content": content or "",
+                    "tool_calls": [tool_call],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id", ""),
+                    "content": tool_result,
+                })
+
+        return full_content
+
     async def run(
         self,
         db: Session,
@@ -342,71 +395,122 @@ class AgentService:
                 full_content = ""
                 tool_call_count = 0
 
-                for _ in range(self.max_rounds):
-                    # 调用 LLM（带工具）
-                    result = await llm_service.chat_with_tools(
-                        messages=messages,
-                        tools=active_tools if active_tools else None,
-                        model_config=model_config,
+                try:
+                    for _ in range(self.max_rounds):
+                        # 调用 LLM（带工具）
+                        result = await llm_service.chat_with_tools(
+                            messages=messages,
+                            tools=active_tools if active_tools else None,
+                            model_config=model_config,
+                        )
+
+                        content = result.get("content", "")
+                        tool_calls = result.get("tool_calls")
+
+                        if content:
+                            full_content += content
+                            chunk_data = json.dumps({"content": content}, ensure_ascii=False)
+                            yield f"data: {chunk_data}\n\n"
+
+                        # 如果没有工具调用，结束循环
+                        if not tool_calls:
+                            break
+
+                        # 执行工具调用
+                        for tool_call in tool_calls:
+                            tool_call_count += 1
+                            func = tool_call.get("function", {})
+                            tool_name = func.get("name", "")
+                            try:
+                                arguments = json.loads(func.get("arguments", "{}"))
+                            except json.JSONDecodeError:
+                                arguments = {}
+
+                            # 发送工具调用信息
+                            tool_info = json.dumps(
+                                {"tool_call": {"name": tool_name, "arguments": arguments}},
+                                ensure_ascii=False,
+                            )
+                            yield f"data: {tool_info}\n\n"
+
+                            # 执行工具
+                            tool_result = await self._execute_tool(tool_name, arguments)
+
+                            # 发送工具结果
+                            result_info = json.dumps(
+                                {"tool_result": {"name": tool_name, "result": tool_result}},
+                                ensure_ascii=False,
+                            )
+                            yield f"data: {result_info}\n\n"
+
+                            # 将工具调用和结果添加到消息历史，供下一轮模型继续推理
+                            messages.append({
+                                "role": "assistant",
+                                "content": content or "",
+                                "tool_calls": [tool_call],
+                            })
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.get("id", ""),
+                                "content": tool_result,
+                            })
+
+                    yield "data: [DONE]\n\n"
+
+                    # 保存助手回复
+                    assistant_msg = Message(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=full_content if full_content else "（Agent 未生成回复）",
                     )
-
-                    content = result.get("content", "")
-                    tool_calls = result.get("tool_calls")
-
-                    if content:
-                        full_content += content
-                        chunk_data = json.dumps({"content": content}, ensure_ascii=False)
-                        yield f"data: {chunk_data}\n\n"
-
-                    # 如果没有工具调用，结束循环
-                    if not tool_calls:
-                        break
-
-                    # 执行工具调用
-                    for tool_call in tool_calls:
-                        tool_call_count += 1
-                        func = tool_call.get("function", {})
-                        tool_name = func.get("name", "")
+                    db.add(assistant_msg)
+                    db.commit()
+                except Exception as ex:
+                    if not full_content.strip():
                         try:
-                            arguments = json.loads(func.get("arguments", "{}"))
-                        except json.JSONDecodeError:
-                            arguments = {}
+                            fallback_messages = [msg.copy() for msg in messages]
+                            fallback_content = await self._run_react_loop(
+                                messages=fallback_messages,
+                                active_tools=active_tools,
+                                model_config=model_config,
+                            )
+                            if fallback_content:
+                                chunk_data = json.dumps({"content": fallback_content}, ensure_ascii=False)
+                                yield f"data: {chunk_data}\n\n"
 
-                        # 发送工具调用信息
-                        tool_info = json.dumps(
-                            {"tool_call": {"name": tool_name, "arguments": arguments}},
-                            ensure_ascii=False,
-                        )
-                        yield f"data: {tool_info}\n\n"
+                            assistant_msg = Message(
+                                conversation_id=conversation_id,
+                                role="assistant",
+                                content=fallback_content if fallback_content else "（Agent 未生成回复）",
+                            )
+                            db.add(assistant_msg)
+                            db.commit()
+                            yield "data: [DONE]\n\n"
+                            return
+                        except Exception as fallback_ex:
+                            error_data = json.dumps(
+                                {
+                                    "type": "error",
+                                    "data": (
+                                        "Agent 流式响应失败，且回退到非流式也失败: "
+                                        f"{llm_service.describe_exception(fallback_ex)}"
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                            yield f"data: {error_data}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
 
-                        # 执行工具
-                        tool_result = await self._execute_tool(tool_name, arguments)
-
-                        # 发送工具结果
-                        result_info = json.dumps(
-                            {"tool_result": {"name": tool_name, "result": tool_result}},
-                            ensure_ascii=False,
-                        )
-                        yield f"data: {result_info}\n\n"
-
-                        # 将工具调用和结果添加到消息历史
-                        messages.append(tool_call)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.get("id", ""),
-                            "content": tool_result,
-                        })
-
-                yield "data: [DONE]\n\n"
-
-                # 保存助手回复
-                assistant_msg = Message(
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=full_content if full_content else "（Agent 未生成回复）",
-                )
-                db.add(assistant_msg)
-                db.commit()
+                    error_data = json.dumps(
+                        {
+                            "type": "error",
+                            "data": f"Agent 流式响应失败: {llm_service.describe_exception(ex)}",
+                        },
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {error_data}\n\n"
+                    yield "data: [DONE]\n\n"
 
             return conversation_id, stream_generator()
         else:
@@ -422,40 +526,11 @@ class AgentService:
                 {"role": "user", "content": message},
             ]
 
-            full_content = ""
-
-            for _ in range(self.max_rounds):
-                result = await llm_service.chat_with_tools(
-                    messages=messages,
-                    tools=active_tools if active_tools else None,
-                    model_config=model_config,
-                )
-
-                content = result.get("content", "")
-                tool_calls = result.get("tool_calls")
-
-                if content:
-                    full_content += content
-
-                if not tool_calls:
-                    break
-
-                for tool_call in tool_calls:
-                    func = tool_call.get("function", {})
-                    tool_name = func.get("name", "")
-                    try:
-                        arguments = json.loads(func.get("arguments", "{}"))
-                    except json.JSONDecodeError:
-                        arguments = {}
-
-                    tool_result = await self._execute_tool(tool_name, arguments)
-
-                    messages.append(tool_call)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id", ""),
-                        "content": tool_result,
-                    })
+            full_content = await self._run_react_loop(
+                messages=messages,
+                active_tools=active_tools,
+                model_config=model_config,
+            )
 
             # 保存助手回复
             assistant_msg = Message(

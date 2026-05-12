@@ -13,10 +13,12 @@ import { useStreamingResponse } from '@/lib/useStreamingResponse';
 export default function AgentPage() {
   const [tools, setTools] = useState<AgentTool[]>([]);
   const [enabledTools, setEnabledTools] = useState<Set<string>>(new Set());
+  const [activeConversationId, setActiveConversationId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>();
   const [loadingTools, setLoadingTools] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { streamingContent, isStreaming, startStream, stopStream, resetStreaming } =
     useStreamingResponse();
@@ -54,9 +56,12 @@ export default function AgentPage() {
   };
 
   const handleSend = async (content: string) => {
+    if (isSubmitting || isStreaming) return;
+
+    setIsSubmitting(true);
     const userMessage: Message = {
       id: `temp-${Date.now()}`,
-      conversation_id: '',
+      conversation_id: activeConversationId || '',
       role: 'user',
       content,
       created_at: new Date().toISOString(),
@@ -67,7 +72,16 @@ export default function AgentPage() {
 
     try {
       const enabledToolIds = tools.filter((t) => enabledTools.has(t.id)).map((t) => t.name);
-      const stream = await sendAgentMessage(content, undefined, selectedModelId, enabledToolIds);
+      const { stream, conversationId } = await sendAgentMessage(
+        content,
+        activeConversationId,
+        selectedModelId,
+        enabledToolIds
+      );
+
+      if (conversationId && !activeConversationId) {
+        setActiveConversationId(conversationId);
+      }
 
       startStream({
         stream,
@@ -98,7 +112,7 @@ export default function AgentPage() {
               ...prev,
               {
                 id: `ai-${Date.now()}`,
-                conversation_id: '',
+                conversation_id: conversationId || activeConversationId || '',
                 role: 'assistant',
                 content: finalContent,
                 created_at: new Date().toISOString(),
@@ -110,7 +124,9 @@ export default function AgentPage() {
           alert(`错误: ${error}`);
         },
       });
+      setIsSubmitting(false);
     } catch (err) {
+      setIsSubmitting(false);
       resetStreaming();
       alert(`发送失败: ${err instanceof Error ? err.message : '未知错误'}`);
     }
@@ -123,7 +139,7 @@ export default function AgentPage() {
         ...prev,
         {
           id: `ai-${Date.now()}`,
-          conversation_id: '',
+          conversation_id: activeConversationId || '',
           role: 'assistant',
           content: finalContent,
           created_at: new Date().toISOString(),
@@ -236,7 +252,7 @@ export default function AgentPage() {
         <ChatInput
           onSend={handleSend}
           onStop={handleStop}
-          isStreaming={isStreaming}
+          isStreaming={isStreaming || isSubmitting}
           placeholder="输入消息，Agent 将使用工具来帮助您..."
         />
       </div>

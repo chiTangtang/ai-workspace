@@ -20,6 +20,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>();
   const [loading, setLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { streamingContent, isStreaming, startStream, stopStream, resetStreaming } =
     useStreamingResponse();
@@ -75,6 +76,9 @@ export default function ChatPage() {
   }, [messages, streamingContent, scrollToBottom]);
 
   const handleSend = async (content: string) => {
+    if (isSubmitting || isStreaming) return;
+
+    setIsSubmitting(true);
     const userMessage: Message = {
       id: `temp-${Date.now()}`,
       conversation_id: activeConversationId || '',
@@ -113,11 +117,25 @@ export default function ChatPage() {
           }
           loadConversations();
         },
-        onError: (error) => {
+        onError: (error, partialContent) => {
+          if (partialContent) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `ai-error-${Date.now()}`,
+                conversation_id: conversationId || activeConversationId || '',
+                role: 'assistant',
+                content: partialContent,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
           alert(`错误: ${error}`);
         },
       });
+      setIsSubmitting(false);
     } catch (err) {
+      setIsSubmitting(false);
       resetStreaming();
       alert(`发送失败: ${err instanceof Error ? err.message : '未知错误'}`);
     }
@@ -258,7 +276,7 @@ export default function ChatPage() {
         <ChatInput
           onSend={handleSend}
           onStop={handleStop}
-          isStreaming={isStreaming}
+          isStreaming={isStreaming || isSubmitting}
           placeholder="输入消息..."
         />
       </div>

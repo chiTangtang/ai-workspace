@@ -2,6 +2,7 @@
 对话服务模块
 管理对话的创建、消息发送、上下文维护等功能
 """
+import json
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 from sqlalchemy.orm import Session
@@ -120,14 +121,11 @@ class ChatService:
             "provider": config.provider,
         }
 
-    def _build_context_messages(
-        self, db: Session, conversation_id: int, new_message: str
-    ) -> list[dict]:
+    def _build_context_messages(self, db: Session, conversation_id: int) -> list[dict]:
         """
         构建上下文消息列表（包含历史消息）
         :param db: 数据库会话
         :param conversation_id: 对话 ID
-        :param new_message: 新消息内容
         :return: 消息列表
         """
         # 获取最近的消息作为上下文
@@ -142,12 +140,7 @@ class ChatService:
         # 按时间正序排列
         messages.reverse()
 
-        # 构建消息列表
-        context = [{"role": msg.role, "content": msg.content} for msg in messages]
-        # 添加新的用户消息
-        context.append({"role": "user", "content": new_message})
-
-        return context
+        return [{"role": msg.role, "content": msg.content} for msg in messages]
 
     def _update_conversation_title(self, db: Session, conversation_id: int, title: str) -> None:
         """
@@ -207,29 +200,73 @@ class ChatService:
         self._update_conversation_title(db, conversation_id, message)
 
         # 构建上下文
-        context_messages = self._build_context_messages(db, conversation_id, message)
+        context_messages = self._build_context_messages(db, conversation_id)
 
         if stream:
             # 流式响应
             async def stream_generator():
-                full_content = ""
-                async for chunk in llm_service.chat_stream(
-                    messages=context_messages,
-                    model_config=model_config,
-                ):
-                    full_content += chunk
-                    yield chunk
+                assistant_content = ""
+                try:
+                    async for chunk in llm_service.chat_stream(
+                        messages=context_messages,
+                        model_config=model_config,
+                    ):
+                        assistant_content += self._extract_content_from_sse(chunk)
+                        yield chunk
 
-                # 保存助手回复到数据库
-                # 从 SSE 格式中提取纯文本内容
-                assistant_content = self._extract_content_from_sse(full_content)
-                assistant_msg = Message(
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=assistant_content,
-                )
-                db.add(assistant_msg)
-                db.commit()
+                    # 保存助手回复到数据库
+                    assistant_msg = Message(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=assistant_content,
+                    )
+                    db.add(assistant_msg)
+                    db.commit()
+                except Exception as ex:
+                    # 若上游模型不稳定或不支持流式，且尚未返回任何内容，则自动回退到非流式。
+                    if not assistant_content.strip():
+                        try:
+                            fallback_response = await llm_service.chat(
+                                messages=context_messages,
+                                model_config=model_config,
+                            )
+                            if fallback_response:
+                                chunk_data = json.dumps({"content": fallback_response}, ensure_ascii=False)
+                                yield f"data: {chunk_data}\n\n"
+
+                            assistant_msg = Message(
+                                conversation_id=conversation_id,
+                                role="assistant",
+                                content=fallback_response or "（模型未返回内容）",
+                            )
+                            db.add(assistant_msg)
+                            db.commit()
+                            yield "data: [DONE]\n\n"
+                            return
+                        except Exception as fallback_ex:
+                            error_data = json.dumps(
+                                {
+                                    "type": "error",
+                                    "data": (
+                                        "模型流式响应失败，且回退到非流式也失败: "
+                                        f"{llm_service.describe_exception(fallback_ex)}"
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                            yield f"data: {error_data}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+
+                    error_data = json.dumps(
+                        {
+                            "type": "error",
+                            "data": f"模型流式响应失败: {llm_service.describe_exception(ex)}",
+                        },
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {error_data}\n\n"
+                    yield "data: [DONE]\n\n"
 
             return conversation_id, stream_generator()
         else:
@@ -257,7 +294,6 @@ class ChatService:
         :param sse_text: SSE 格式文本
         :return: 纯文本内容
         """
-        import json
         content_parts = []
         for line in sse_text.split("\n"):
             line = line.strip()

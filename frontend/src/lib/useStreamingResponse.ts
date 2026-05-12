@@ -6,7 +6,7 @@ import { processStream } from '@/lib/api';
 interface StartStreamOptions {
   stream: ReadableStream<Uint8Array>;
   onDone?: (finalContent: string) => void;
-  onError?: (error: string) => void;
+  onError?: (error: string, partialContent: string) => void;
   onToolCall?: (toolName: string, args: string) => void;
   onToolResult?: (result: string) => void;
 }
@@ -42,7 +42,8 @@ export function useStreamingResponse() {
         cancelStreamRef.current = null;
       },
       onError: (error) => {
-        options.onError?.(error);
+        const partialContent = streamingContentRef.current;
+        options.onError?.(error, partialContent);
         resetStreaming();
         cancelStreamRef.current = null;
       },

@@ -157,25 +157,37 @@ async def query_knowledge_base(
         raise HTTPException(status_code=400, detail="没有可用的模型配置，请先添加模型配置")
 
     try:
-        # 使用流式响应
-        async def stream_generator():
-            async for chunk in rag_service.query_stream(
-                db=db,
-                question=request.question,
-                knowledge_base_id=kb_id,
-                model_config=model_config,
-                conversation_id=request.conversation_id,
-            ):
-                yield chunk
+        if request.stream:
+            async def stream_generator():
+                async for chunk in rag_service.query_stream(
+                    db=db,
+                    question=request.question,
+                    knowledge_base_id=kb_id,
+                    model_config=model_config,
+                    conversation_id=request.conversation_id,
+                ):
+                    yield chunk
 
-        return StreamingResponse(
-            stream_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
+            return StreamingResponse(
+                stream_generator(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        response = await rag_service.query(
+            db=db,
+            question=request.question,
+            knowledge_base_id=kb_id,
+            model_config=model_config,
+            conversation_id=request.conversation_id,
         )
+        return {
+            "role": "assistant",
+            "content": response,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

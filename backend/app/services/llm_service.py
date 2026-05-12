@@ -44,6 +44,33 @@ class LLMService:
         base_url = base_url.rstrip("/")
         return f"{base_url}/chat/completions"
 
+    @staticmethod
+    def _extract_message(data: dict) -> dict:
+        """
+        从 OpenAI 兼容响应中安全提取 message。
+        :param data: 响应 JSON
+        :return: message 字典
+        """
+        choices = data.get("choices") or []
+        if not choices:
+            return {}
+        return choices[0].get("message") or {}
+
+    @staticmethod
+    def describe_exception(ex: Exception) -> str:
+        """
+        提取更可读的上游异常信息。
+        :param ex: 异常对象
+        :return: 面向日志/前端的错误描述
+        """
+        if isinstance(ex, httpx.HTTPStatusError):
+            status_code = ex.response.status_code
+            response_text = (ex.response.text or "").strip()
+            if response_text:
+                return f"HTTP {status_code}: {response_text[:500]}"
+            return str(ex)
+        return str(ex)
+
     async def chat(
         self,
         messages: list[dict],
@@ -85,17 +112,17 @@ class LLMService:
             data = response.json()
 
         # 提取回复内容
-        choice = data["choices"][0]
-        message = choice["message"]
+        message = self._extract_message(data)
 
         # 检查是否有工具调用
-        if message and "tool_calls" in message:
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
             return json.dumps({
                 "content": message.get("content") or "",
-                "tool_calls": message["tool_calls"],
+                "tool_calls": tool_calls,
             }, ensure_ascii=False)
 
-        return (message or {}).get("content") or ""
+        return message.get("content") or ""
 
     async def chat_stream(
         self,
@@ -150,8 +177,11 @@ class LLMService:
 
                         try:
                             data = json.loads(data_str)
-                            choice = data["choices"][0]
-                            delta = choice.get("delta", {})
+                            choices = data.get("choices") or []
+                            if not choices:
+                                continue
+
+                            delta = choices[0].get("delta") or {}
 
                             content = delta.get("content", "")
                             if content:
@@ -160,14 +190,15 @@ class LLMService:
                                 yield f"data: {chunk_data}\n\n"
 
                             # 处理流式工具调用
-                            if "tool_calls" in delta:
+                            tool_calls = delta.get("tool_calls")
+                            if tool_calls:
                                 tool_calls_data = json.dumps(
-                                    {"tool_calls": delta["tool_calls"]},
+                                    {"tool_calls": tool_calls},
                                     ensure_ascii=False,
                                 )
                                 yield f"data: {tool_calls_data}\n\n"
 
-                        except json.JSONDecodeError:
+                        except (json.JSONDecodeError, TypeError, IndexError, KeyError):
                             # 忽略无法解析的行
                             continue
 

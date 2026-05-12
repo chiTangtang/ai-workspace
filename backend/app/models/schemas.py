@@ -98,6 +98,7 @@ class RAGRequest(BaseModel):
     knowledge_base_id: int = Field(..., description="知识库 ID")
     conversation_id: Optional[int] = Field(None, description="对话 ID")
     model_config_id: Optional[int] = Field(None, description="模型配置 ID")
+    stream: bool = Field(True, description="是否使用流式响应")
 
 
 # ==================== 模型配置相关 ====================

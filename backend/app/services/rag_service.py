@@ -2,6 +2,7 @@
 RAG（检索增强生成）服务模块
 实现文档处理、向量检索和增强生成的完整流程
 """
+import json
 import os
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -187,11 +188,50 @@ class RAGService:
         ]
 
         # 6. 流式调用 LLM
-        async for chunk in llm_service.chat_stream(
-            messages=messages,
-            model_config=model_config,
-        ):
-            yield chunk
+        assistant_content = ""
+        try:
+            async for chunk in llm_service.chat_stream(
+                messages=messages,
+                model_config=model_config,
+            ):
+                assistant_content += self._extract_content_from_sse(chunk)
+                yield chunk
+        except Exception as ex:
+            if not assistant_content.strip():
+                try:
+                    fallback_response = await llm_service.chat(
+                        messages=messages,
+                        model_config=model_config,
+                    )
+                    if fallback_response:
+                        chunk_data = json.dumps({"content": fallback_response}, ensure_ascii=False)
+                        yield f"data: {chunk_data}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                except Exception as fallback_ex:
+                    error_data = json.dumps(
+                        {
+                            "type": "error",
+                            "data": (
+                                "知识库流式响应失败，且回退到非流式也失败: "
+                                f"{llm_service.describe_exception(fallback_ex)}"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {error_data}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+            error_data = json.dumps(
+                {
+                    "type": "error",
+                    "data": f"知识库流式响应失败: {llm_service.describe_exception(ex)}",
+                },
+                ensure_ascii=False,
+            )
+            yield f"data: {error_data}\n\n"
+            yield "data: [DONE]\n\n"
 
     @staticmethod
     def _build_rag_prompt(context: str) -> str:
@@ -213,6 +253,25 @@ class RAGService:
 3. 回答时请注明信息来源
 4. 如果问题与参考文档无关，你可以根据你的知识来回答，但要说明这不是来自文档的信息
 5. 请用清晰、准确的语言回答"""
+
+    @staticmethod
+    def _extract_content_from_sse(sse_text: str) -> str:
+        """
+        从单个或多个 SSE 数据块中提取纯文本内容。
+        :param sse_text: SSE 格式文本
+        :return: 纯文本内容
+        """
+        content_parts = []
+        for line in sse_text.split("\n"):
+            line = line.strip()
+            if line.startswith("data: ") and line != "data: [DONE]":
+                try:
+                    data = json.loads(line[6:])
+                    if "content" in data:
+                        content_parts.append(data["content"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        return "".join(content_parts)
 
 
 # 全局 RAG 服务实例

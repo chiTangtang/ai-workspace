@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from '@/lib/theme-context';
-import { Conversation } from '@/types';
+import { getModelConfigs } from '@/lib/api';
+import { Conversation, ModelConfig } from '@/types';
 
 interface SidebarProps {
   conversations?: Conversation[];
@@ -27,6 +28,39 @@ export default function Sidebar({
   const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
   const isChatPage = pathname === '/chat';
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadModelConfigs() {
+      setModelsLoading(true);
+      try {
+        const configs = await getModelConfigs();
+        if (active) {
+          setModelConfigs(Array.isArray(configs) ? configs : []);
+        }
+      } catch {
+        if (active) {
+          setModelConfigs([]);
+        }
+      } finally {
+        if (active) {
+          setModelsLoading(false);
+        }
+      }
+    }
+
+    loadModelConfigs();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const defaultChatModel = modelConfigs.find((config) => config.is_default);
+  const defaultEmbeddingModel = modelConfigs.find((config) => config.is_embedding_default);
 
   // 导航菜单项
   const navItems = [
@@ -95,7 +129,10 @@ export default function Sidebar({
           </div>
         )}
         <button
-          onClick={onToggleCollapse}
+          onClick={() => {
+            setSettingsOpen(false);
+            onToggleCollapse?.();
+          }}
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
           title={collapsed ? '展开侧边栏' : '收起侧边栏'}
         >
@@ -118,6 +155,7 @@ export default function Sidebar({
             <Link
               key={item.href}
               href={item.href}
+              onClick={() => setSettingsOpen(false)}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
                 isActive
                   ? 'bg-accent/10 text-accent'
@@ -169,26 +207,97 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* 底部主题切换 */}
-      <div className="px-2 py-3 border-t border-border shrink-0">
+      {/* 底部快捷设置 */}
+      <div className="relative px-2 py-3 border-t border-border shrink-0">
+        {settingsOpen && (
+          <div
+            className={`absolute z-30 rounded-xl border border-border bg-background/95 shadow-xl backdrop-blur-sm left-full bottom-3 ml-2 w-72 ${
+              collapsed ? '' : ''
+            }`}
+          >
+            <div className="border-b border-border px-4 py-3">
+              <div className="text-sm font-semibold text-foreground">快捷设置</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                常用选项放这里，少绕点路。
+              </div>
+            </div>
+
+            <div className="space-y-3 px-3 py-3">
+              <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+                <div className="text-xs font-medium text-muted-foreground">默认聊天模型</div>
+                <div className="mt-1 break-all text-sm text-foreground">
+                  {modelsLoading
+                    ? '加载中...'
+                    : defaultChatModel?.model_name || '未设置'}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+                <div className="text-xs font-medium text-muted-foreground">默认向量模型</div>
+                <div className="mt-1 break-all text-sm text-foreground">
+                  {modelsLoading
+                    ? '加载中...'
+                    : defaultEmbeddingModel?.model_name || '未设置'}
+                </div>
+              </div>
+
+              <button
+                onClick={toggleTheme}
+                className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {theme === 'dark' ? (
+                  <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                  </svg>
+                )}
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">主题切换</div>
+                  <div className="text-xs text-muted-foreground">
+                    当前为{theme === 'dark' ? '深色主题' : '亮色主题'}
+                  </div>
+                </div>
+              </button>
+
+              <Link
+                href="/settings"
+                onClick={() => setSettingsOpen(false)}
+                className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-foreground">进入完整设置</div>
+                  <div className="text-xs text-muted-foreground">
+                    管理模型配置和连接测试
+                  </div>
+                </div>
+              </Link>
+            </div>
+          </div>
+        )}
+
         <button
-          onClick={toggleTheme}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-          title={collapsed ? (theme === 'dark' ? '切换到亮色主题' : '切换到深色主题') : undefined}
+          onClick={() => setSettingsOpen((open) => !open)}
+          className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          title={collapsed ? '快捷设置' : undefined}
         >
-          {theme === 'dark' ? (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-            </svg>
-          ) : (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-            </svg>
-          )}
+          <svg className={`w-5 h-5 shrink-0 transition-transform ${settingsOpen ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
           {!collapsed && (
-            <span className="text-sm">
-              {theme === 'dark' ? '亮色主题' : '深色主题'}
-            </span>
+            <div className="min-w-0 text-left">
+              <div className="text-sm font-medium text-foreground">快捷设置</div>
+              <div className="truncate text-xs text-muted-foreground">
+                主题、模型和系统入口
+              </div>
+            </div>
           )}
         </button>
       </div>

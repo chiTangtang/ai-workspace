@@ -195,7 +195,7 @@ export async function sendAgentMessage(
   conversationId?: string,
   modelConfigId?: string,
   tools?: string[]
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<StreamResponse> {
   const res = await fetch(`${API_BASE}/api/agent/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -208,7 +208,10 @@ export async function sendAgentMessage(
   });
   if (!res.ok) throw new Error('发送 Agent 消息失败');
   if (!res.body) throw new Error('响应体为空');
-  return res.body;
+  return {
+    stream: res.body,
+    conversationId: res.headers.get('X-Conversation-Id') || undefined,
+  };
 }
 
 export async function analyzeImage(
@@ -271,6 +274,19 @@ export function processStream(
 
             if (typeof parsed.content === 'string') {
               callbacks.onContent?.(parsed.content);
+              continue;
+            }
+
+            if (parsed.tool_call) {
+              callbacks.onToolCall?.(
+                parsed.tool_call.name || 'tool_call',
+                JSON.stringify(parsed.tool_call.arguments ?? {})
+              );
+              continue;
+            }
+
+            if (parsed.tool_result) {
+              callbacks.onToolResult?.(parsed.tool_result.result || '');
               continue;
             }
 
